@@ -1,0 +1,23 @@
+[
+  {
+    "name": "Masjid Raya Baiturrahman",
+    "country": "Indonesia",
+    "sholat": "Subuh",
+    "lat": 5.5535628,
+    "lon": 95.1771998
+  },
+  {
+    "name": "Masjid Tuha Indrapuri",
+    "country": "Indonesia",
+    "sholat": "Dzuhur",
+    "lat": 5.3417618,
+    "lon": 95.3042944
+  },
+  {
+    "name": "Masjid Jamik Al-Ittihadiyah",
+    "country": "Indonesia",
+    "sholat": "Ashar",
+    "lat": 5.2759333,
+    "lon": 95.089135
+  }
+]
