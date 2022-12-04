@@ -34,3 +34,7 @@ yarn-error.log*
 
 # vercel
 .vercel
+
+# data
+data/mosque/*
+!data/mosque/sample.json
