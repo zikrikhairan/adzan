@@ -12,6 +12,8 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
+	"time"
 )
 
 func main() {
@@ -48,6 +50,10 @@ func main() {
 		longitude, _ := strconv.ParseFloat(longitudeQuery, bitSize)
 		response, _ := getMosqueLocation(latitude, longitude)
 		c.JSON(http.StatusOK, response)
+	})
+	r.GET("/getAllMosque", func(c *gin.Context) {
+		getAllMosque()
+		c.JSON(http.StatusOK, "Successfully retrieved all")
 	})
 	r.Run("127.0.0.1:53404")
 }
@@ -104,4 +110,42 @@ func getMosqueLocation(lat float64, long float64) (responseSpatial *ResponseSpat
 	}
 
 	return responseSpatial, nil
+}
+
+func getAllMosque() {
+	start := time.Now()
+	defer func() {
+		fmt.Println("Execution Time: ", time.Since(start))
+	}()
+	//minLat := -90
+	//maxLat := 90
+	//minLong := -180
+	//maxLong := 180
+
+	minLat := -180
+	maxLat := 180
+	minLong := -90
+	maxLong := 90
+
+	for x := minLat; x <= maxLat; x++ {
+		wg := sync.WaitGroup{}
+		var listMosque []Candidate
+		for y := minLong; y <= maxLong; y++ {
+			wg.Add(1)
+			go func(x int, y int) {
+				dataMosque, err := getMosqueLocation(float64(x), float64(y))
+				if err != nil {
+					return
+				}
+				for _, mosque := range dataMosque.Candidates {
+					listMosque = append(listMosque, mosque)
+				}
+				wg.Done()
+			}(x, y)
+		}
+		wg.Wait()
+		file, _ := json.MarshalIndent(listMosque, "", " ")
+		fileName := fmt.Sprintf("%s.json", strconv.Itoa(x))
+		_ = ioutil.WriteFile("data/mosque/"+fileName, file, 0644)
+	}
 }
