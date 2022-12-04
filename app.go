@@ -54,6 +54,11 @@ func main() {
 		getAllMosque()
 		c.JSON(http.StatusOK, "Successfully retrieved all")
 	})
+
+	r.GET("/removeDuplicateMosque", func(c *gin.Context) {
+		removeDuplicateMosque()
+		c.JSON(http.StatusOK, "Successfully retrieved all")
+	})
 	r.Run("127.0.0.1:53404")
 }
 
@@ -75,6 +80,13 @@ type Attribute struct {
 type Location struct {
 	Latitude  float64 `json:"y"`
 	Longitude float64 `json:"x"`
+}
+
+type Mosque struct {
+	Name      string  `json:"name"`
+	Country   string  `json:"country"`
+	Latitude  float64 `json:"lat"`
+	Longitude float64 `json:"lon"`
 }
 
 const baseURL = "https://geocode-api.arcgis.com/"
@@ -165,4 +177,48 @@ func getAllMosque() {
 		fileName := fmt.Sprintf("%s.json", strconv.Itoa(x))
 		_ = ioutil.WriteFile("data/mosque/"+fileName, file, 0644)
 	}
+}
+
+func removeDuplicateMosque() {
+	path := "data/mosque/"
+	files, err := ioutil.ReadDir(path)
+	if err != nil {
+		log.Fatal(err)
+	}
+	listKeyMosque := make(map[string]bool)
+	var listAllMosque []Mosque
+	for _, file := range files {
+		fmt.Println(file.Name(), file.IsDir())
+		content, err := ioutil.ReadFile(path + file.Name())
+		if err != nil {
+			log.Fatal("Error when opening file: ", err)
+		}
+
+		// Now let's unmarshall the data into `payload`
+		var listMosque []Candidate
+		err = json.Unmarshal(content, &listMosque)
+		if err != nil {
+			log.Fatal("Error during Unmarshal(): ", err)
+		}
+		for _, candidate := range listMosque {
+			latitude := strconv.FormatFloat(candidate.Location.Latitude, 'E', -1, 32)
+			longitude := strconv.FormatFloat(candidate.Location.Longitude, 'E', -1, 32)
+			key := fmt.Sprintf("%s,%s", latitude, longitude)
+			if _, ok := listKeyMosque[key]; ok {
+				continue
+			} else {
+				listKeyMosque[key] = true
+				var mosque Mosque
+				mosque.Name = candidate.Attribute.Name
+				mosque.Country = candidate.Attribute.Country
+				mosque.Latitude = candidate.Location.Latitude
+				mosque.Longitude = candidate.Location.Longitude
+				listAllMosque = append(listAllMosque, mosque)
+			}
+		}
+	}
+
+	file, _ := json.MarshalIndent(listAllMosque, "", " ")
+	fileName := "mosque.json"
+	_ = ioutil.WriteFile("data/"+fileName, file, 0644)
 }
