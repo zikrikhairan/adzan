@@ -12,7 +12,6 @@ import (
 	"os"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 )
 
@@ -127,23 +126,41 @@ func getAllMosque() {
 	minLong := -90
 	maxLong := 90
 
+	//with concurrent
+	//for x := minLat; x <= maxLat; x++ {
+	//	wg := sync.WaitGroup{}
+	//	var listMosque []Candidate
+	//	for y := minLong; y <= maxLong; y++ {
+	//		wg.Add(1)
+	//		go func(x int, y int) {
+	//			dataMosque, err := getMosqueLocation(float64(x), float64(y))
+	//			if err != nil {
+	//				return
+	//			}
+	//			for _, mosque := range dataMosque.Candidates {
+	//				listMosque = append(listMosque, mosque)
+	//			}
+	//			wg.Done()
+	//		}(x, y)
+	//	}
+	//	wg.Wait()
+	//	file, _ := json.MarshalIndent(listMosque, "", " ")
+	//	fileName := fmt.Sprintf("%s.json", strconv.Itoa(x))
+	//	_ = ioutil.WriteFile("data/mosque/"+fileName, file, 0644)
+	//}
+
+	//without concurrent
 	for x := minLat; x <= maxLat; x++ {
-		wg := sync.WaitGroup{}
 		var listMosque []Candidate
 		for y := minLong; y <= maxLong; y++ {
-			wg.Add(1)
-			go func(x int, y int) {
-				dataMosque, err := getMosqueLocation(float64(x), float64(y))
-				if err != nil {
-					return
-				}
-				for _, mosque := range dataMosque.Candidates {
-					listMosque = append(listMosque, mosque)
-				}
-				wg.Done()
-			}(x, y)
+			dataMosque, err := getMosqueLocation(float64(x), float64(y))
+			if err != nil {
+				return
+			}
+			for _, mosque := range dataMosque.Candidates {
+				listMosque = append(listMosque, mosque)
+			}
 		}
-		wg.Wait()
 		file, _ := json.MarshalIndent(listMosque, "", " ")
 		fileName := fmt.Sprintf("%s.json", strconv.Itoa(x))
 		_ = ioutil.WriteFile("data/mosque/"+fileName, file, 0644)
