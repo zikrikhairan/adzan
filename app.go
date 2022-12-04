@@ -59,6 +59,20 @@ func main() {
 		removeDuplicateMosque()
 		c.JSON(http.StatusOK, "Successfully retrieved all")
 	})
+
+	r.GET("/getPrayerTimeByLocation", func(c *gin.Context) {
+		const bitSize = 64 // Don't think about it to much. It's just 64 bits.
+		latitudeQuery := c.Query("latitude")
+		longitudeQuery := c.Query("longitude")
+		monthQuery := c.Query("month")
+		yearQuery := c.Query("year")
+		latitude, _ := strconv.ParseFloat(latitudeQuery, bitSize)
+		longitude, _ := strconv.ParseFloat(longitudeQuery, bitSize)
+		month, _ := strconv.Atoi(monthQuery)
+		year, _ := strconv.Atoi(yearQuery)
+		response, _ := getPrayerTimeByLocation(latitude, longitude, month, year)
+		c.JSON(http.StatusOK, response)
+	})
 	r.Run("127.0.0.1:53404")
 }
 
@@ -221,4 +235,48 @@ func removeDuplicateMosque() {
 	file, _ := json.MarshalIndent(listAllMosque, "", " ")
 	fileName := "mosque.json"
 	_ = ioutil.WriteFile("data/"+fileName, file, 0644)
+}
+
+type ResponsePrayer struct {
+	Data []Prayer `json:"data"`
+}
+
+type Prayer struct {
+	Timings Timings `json:"timings"`
+	Date    Date    `json:"date"`
+}
+
+type Timings struct {
+	Fajr    string `json:"Fajr"`
+	Dhuhr   string `json:"Dhuhr"`
+	Asr     string `json:"Asr"`
+	Maghrib string `json:"Maghrib"`
+	Isha    string `json:"Isha"`
+}
+
+type Date struct {
+	Readable  string `json:"readable"`
+	Timestamp string `json:"timestamp"`
+}
+
+const baseURLPrayer = "http://api.aladhan.com/v1/calendar?latitude=%f&longitude=%f&month=%d&year=%d&iso8601=true"
+
+func getPrayerTimeByLocation(lat float64, long float64, month int, year int) (responsePrayer *ResponsePrayer, err error) {
+	data := url.Values{}
+	urlStr := fmt.Sprintf(baseURLPrayer, lat, long, month, year)
+
+	client := &http.Client{}
+	r, _ := http.NewRequest(http.MethodGet, urlStr, strings.NewReader(data.Encode())) // URL-encoded payload
+
+	response, _ := client.Do(r)
+	if err != nil {
+		return nil, err
+	}
+
+	err = json.NewDecoder(response.Body).Decode(&responsePrayer)
+	if err != nil {
+		return nil, err
+	}
+
+	return responsePrayer, nil
 }
