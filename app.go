@@ -8,6 +8,9 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/joho/godotenv"
 	_ "github.com/lib/pq"
+	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/mongo"
+	"go.mongodb.org/mongo-driver/mongo/options"
 	"io/ioutil"
 	"log"
 	"math"
@@ -262,6 +265,7 @@ func removeDuplicateMosque() {
 
 type ResponsePrayer struct {
 	Data []Prayer `json:"data"`
+	Code int      `json:"code"`
 }
 
 type Prayer struct {
@@ -288,6 +292,11 @@ type PrayerTime struct {
 	Shalat    string  `json:"shalat"`
 	Latitude  float64 `json:"lat"`
 	Longitude float64 `json:"lon"`
+}
+
+type listShalat struct {
+	Time       int64        `json:"time"`
+	PrayerTime []PrayerTime `bson:"prayerTime"`
 }
 
 const baseURLPrayer = "http://api.aladhan.com/v1/calendar?latitude=%f&longitude=%f&month=%d&year=%d&iso8601=true&timezonestring=UTC&method=2"
@@ -320,7 +329,7 @@ func getPrayerTimeByLocation(lat float64, long float64, month int, year int) (re
 
 const dbMaxIdleConns = 4
 const dbMaxConns = 100
-const totalWorker = 100
+const totalWorker = 50
 
 func openDbConnection() (*sql.DB, error) {
 	host := os.Getenv("PG_HOSTNAME")
@@ -338,16 +347,48 @@ func openDbConnection() (*sql.DB, error) {
 	return db, nil
 }
 
+var ctx = context.Background()
+
+func connect() (*mongo.Database, error) {
+	clientOptions := options.Client()
+	clientOptions.ApplyURI("mongodb://localhost:27017")
+	client, err := mongo.NewClient(clientOptions)
+	if err != nil {
+		return nil, err
+	}
+
+	err = client.Connect(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	return client.Database("adzan"), nil
+}
+
 func getPrayerTimeByMosqueLocation(month int, year int) {
-	db, _ := openDbConnection()
+	//db, _ := openDbConnection()
+	//using mongodb
+	db, err := connect()
+	if err != nil {
+		log.Fatal(err.Error())
+	}
 	start := time.Now()
 	defer func() {
 		fmt.Println("Execution Time: ", time.Since(start))
 	}()
 	//Truncate table prayer time
-	truncateTable := `truncate table "prayer_time"`
-	_, e := db.Exec(truncateTable)
-	CheckError(e)
+	//truncateTable := `truncate table "prayer_time"`
+	//_, e := db.Exec(truncateTable)
+	//CheckError(e)
+
+	db.Collection("adzan").Drop(ctx)
+	db.CreateCollection(ctx, "adzan")
+	db.Collection("adzan").Indexes().CreateOne(
+		context.Background(),
+		mongo.IndexModel{
+			Keys: bson.D{{Key: "time", Value: 1}},
+		},
+	)
 
 	// Now let's unmarshall the data into `payload`
 	content, err := ioutil.ReadFile("data/mosque.json")
@@ -394,9 +435,33 @@ func CheckError(err error) {
 	}
 }
 
-func checkToListEpoch(mosque Mosque, shalat string, epoch int64, database *sql.DB) {
-	insertDynStmt := `insert into "prayer_time"("time", "name", "country", "shalat", "lat", "lon") values($1, $2, $3, $4, $5, $6)`
-	database.Exec(insertDynStmt, epoch, mosque.Name, mosque.Country, shalat, mosque.Latitude, mosque.Longitude)
+func checkToListEpoch(mosque Mosque, shalat string, epoch int64, database *mongo.Database) {
+	var selector = bson.M{"time": epoch}
+	csr := database.Collection("adzan").FindOne(ctx, selector)
+	var data listShalat
+	var prayerTime PrayerTime
+	prayerTime.Name = mosque.Name
+	prayerTime.Shalat = shalat
+	prayerTime.Country = mosque.Country
+	prayerTime.Latitude = mosque.Latitude
+	prayerTime.Longitude = mosque.Longitude
+	if csr.Err() == nil {
+		_ = csr.Decode(&data)
+		data.PrayerTime = append(data.PrayerTime, prayerTime)
+		_, err := database.Collection("adzan").UpdateOne(ctx, selector, bson.M{"$set": data})
+		if err != nil {
+			log.Fatal(err.Error())
+			return
+		}
+	} else {
+		data.Time = epoch
+		data.PrayerTime = append(data.PrayerTime, prayerTime)
+		_, err := database.Collection("adzan").InsertOne(ctx, data)
+		if err != nil {
+			log.Fatal(err.Error())
+			return
+		}
+	}
 }
 
 func getPrayerTimeByMosqueLocationConcurrent(month int, year int) {
@@ -407,12 +472,18 @@ func getPrayerTimeByMosqueLocationConcurrent(month int, year int) {
 	}
 	var listMosque []Mosque
 	err = json.Unmarshal(content, &listMosque)
-	db, err := openDbConnection()
+	db, err := connect()
 	if err != nil {
 		log.Fatal(err.Error())
 	}
-	truncateTable := `truncate table "prayer_time"`
-	db.Exec(truncateTable)
+	db.Collection("adzan").Drop(ctx)
+	db.CreateCollection(ctx, "adzan")
+	db.Collection("adzan").Indexes().CreateOne(
+		context.Background(),
+		mongo.IndexModel{
+			Keys: bson.D{{Key: "time", Value: 1}},
+		},
+	)
 
 	jobs := make(chan Mosque, 0)
 	wg := new(sync.WaitGroup)
@@ -425,9 +496,9 @@ func getPrayerTimeByMosqueLocationConcurrent(month int, year int) {
 	duration := time.Since(start)
 	fmt.Println("done in", int(math.Ceil(duration.Seconds())), "seconds")
 }
-func dispatchWorkers(month int, year int, db *sql.DB, jobs <-chan Mosque, wg *sync.WaitGroup) {
+func dispatchWorkers(month int, year int, db *mongo.Database, jobs <-chan Mosque, wg *sync.WaitGroup) {
 	for workerIndex := 0; workerIndex <= totalWorker; workerIndex++ {
-		go func(workerIndex int, db *sql.DB, jobs <-chan Mosque, wg *sync.WaitGroup) {
+		go func(workerIndex int, db *mongo.Database, jobs <-chan Mosque, wg *sync.WaitGroup) {
 			counter := 0
 			for job := range jobs {
 				doTheJob(month, year, workerIndex, counter, db, job)
@@ -446,43 +517,39 @@ func readCsvFilePerLineThenSendToWorker(listMosque []Mosque, jobs chan<- Mosque,
 	close(jobs)
 }
 
-func doTheJob(month int, year int, workerIndex, counter int, db *sql.DB, mosque Mosque) {
-	for {
-		response, error := getPrayerTimeByLocation(mosque.Latitude, mosque.Longitude, month, year)
-		if error != nil {
-			fmt.Println(error)
-		}
-		conn, err := db.Conn(context.Background())
-		for _, dataPrayer := range response.Data {
-			fajr := dataPrayer.Timings.Fajr
-			dhuhr := dataPrayer.Timings.Dhuhr
-			asr := dataPrayer.Timings.Asr
-			maghrib := dataPrayer.Timings.Maghrib
-			isha := dataPrayer.Timings.Isha
-			fajrDate, _ := time.Parse(time.RFC3339, strings.Replace(fajr, "+00:00 (UTC)", "", 1)+"Z")
-			dhuhrDate, _ := time.Parse(time.RFC3339, strings.Replace(dhuhr, "+00:00 (UTC)", "", 1)+"Z")
-			asrDate, _ := time.Parse(time.RFC3339, strings.Replace(asr, "+00:00 (UTC)", "", 1)+"Z")
-			maghribDate, _ := time.Parse(time.RFC3339, strings.Replace(maghrib, "+00:00 (UTC)", "", 1)+"Z")
-			ishaDate, _ := time.Parse(time.RFC3339, strings.Replace(isha, "+00:00 (UTC)", "", 1)+"Z")
-			fajrEpoch := fajrDate.Unix()
-			dhuhrEpoch := dhuhrDate.Unix()
-			asrEpoch := asrDate.Unix()
-			maghribEpoch := maghribDate.Unix()
-			ishaEpoch := ishaDate.Unix()
-			query := `insert into "prayer_time"("time", "name", "country", "shalat", "lat", "lon") values($1, $2, $3, $4, $5, $6)`
-			_, err = conn.ExecContext(context.Background(), query, fajrEpoch, mosque.Name, mosque.Country, "Fajr", mosque.Latitude, mosque.Longitude)
-			_, err = conn.ExecContext(context.Background(), query, dhuhrEpoch, mosque.Name, mosque.Country, "Dhuhr", mosque.Latitude, mosque.Longitude)
-			_, err = conn.ExecContext(context.Background(), query, asrEpoch, mosque.Name, mosque.Country, "Asr", mosque.Latitude, mosque.Longitude)
-			_, err = conn.ExecContext(context.Background(), query, maghribEpoch, mosque.Name, mosque.Country, "Maghrib", mosque.Latitude, mosque.Longitude)
-			_, err = conn.ExecContext(context.Background(), query, ishaEpoch, mosque.Name, mosque.Country, "Isha", mosque.Latitude, mosque.Longitude)
-		}
-		if err != nil {
-			log.Fatal(err.Error())
-		}
-		err = conn.Close()
-		if err != nil {
-			log.Fatal(err.Error())
-		}
+func doTheJob(month int, year int, workerIndex, counter int, db *mongo.Database, mosque Mosque) {
+	response, e := getPrayerTimeByLocation(mosque.Latitude, mosque.Longitude, month, year)
+	if e != nil {
+		fmt.Println(e)
+		return
+	}
+	for response == nil {
+		response, e = getPrayerTimeByLocation(mosque.Latitude, mosque.Longitude, month, year)
+	}
+	if response == nil || response.Code != 200 {
+		return
+	}
+	for _, dataPrayer := range response.Data {
+		fajr := dataPrayer.Timings.Fajr
+		dhuhr := dataPrayer.Timings.Dhuhr
+		asr := dataPrayer.Timings.Asr
+		maghrib := dataPrayer.Timings.Maghrib
+		isha := dataPrayer.Timings.Isha
+		fajrDate, _ := time.Parse(time.RFC3339, strings.Replace(fajr, "+00:00 (UTC)", "", 1)+"Z")
+		dhuhrDate, _ := time.Parse(time.RFC3339, strings.Replace(dhuhr, "+00:00 (UTC)", "", 1)+"Z")
+		asrDate, _ := time.Parse(time.RFC3339, strings.Replace(asr, "+00:00 (UTC)", "", 1)+"Z")
+		maghribDate, _ := time.Parse(time.RFC3339, strings.Replace(maghrib, "+00:00 (UTC)", "", 1)+"Z")
+		ishaDate, _ := time.Parse(time.RFC3339, strings.Replace(isha, "+00:00 (UTC)", "", 1)+"Z")
+		fajrEpoch := fajrDate.Unix()
+		dhuhrEpoch := dhuhrDate.Unix()
+		asrEpoch := asrDate.Unix()
+		maghribEpoch := maghribDate.Unix()
+		ishaEpoch := ishaDate.Unix()
+		checkToListEpoch(mosque, "Fajr", fajrEpoch, db)
+		checkToListEpoch(mosque, "Dhuhr", dhuhrEpoch, db)
+		checkToListEpoch(mosque, "Asr", asrEpoch, db)
+		checkToListEpoch(mosque, "maghrib", maghribEpoch, db)
+		checkToListEpoch(mosque, "Isha", ishaEpoch, db)
 	}
 
 	if counter%100 == 0 {
