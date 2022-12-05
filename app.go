@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -9,11 +10,13 @@ import (
 	_ "github.com/lib/pq"
 	"io/ioutil"
 	"log"
+	"math"
 	"net/http"
 	"net/url"
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -82,6 +85,15 @@ func main() {
 		month, _ := strconv.Atoi(monthQuery)
 		year, _ := strconv.Atoi(yearQuery)
 		getPrayerTimeByMosqueLocation(month, year)
+		c.JSON(http.StatusOK, "Successfully retrieved all")
+	})
+
+	r.GET("/getPrayerTimeByMosqueLocationConcurrent", func(c *gin.Context) {
+		monthQuery := c.Query("month")
+		yearQuery := c.Query("year")
+		month, _ := strconv.Atoi(monthQuery)
+		year, _ := strconv.Atoi(yearQuery)
+		getPrayerTimeByMosqueLocationConcurrent(month, year)
 		c.JSON(http.StatusOK, "Successfully retrieved all")
 	})
 	r.Run("127.0.0.1:53404")
@@ -291,6 +303,12 @@ func getPrayerTimeByLocation(lat float64, long float64, month int, year int) (re
 	if err != nil {
 		return nil, err
 	}
+	if response == nil {
+		return nil, err
+	}
+	if response.Body == nil {
+		return nil, err
+	}
 
 	err = json.NewDecoder(response.Body).Decode(&responsePrayer)
 	if err != nil {
@@ -316,16 +334,12 @@ func openDbConnection() (*sql.DB, error) {
 	db, err := sql.Open("postgres", psqlconn)
 	CheckError(err)
 	db.SetMaxOpenConns(dbMaxConns)
-	db.SetMaxIdleConns(totalWorker)
+	db.SetMaxIdleConns(dbMaxIdleConns)
 	return db, nil
 }
 
 func getPrayerTimeByMosqueLocation(month int, year int) {
 	db, _ := openDbConnection()
-	content, err := ioutil.ReadFile("data/mosque.json")
-	if err != nil {
-		log.Fatal("Error when opening file: ", err)
-	}
 	start := time.Now()
 	defer func() {
 		fmt.Println("Execution Time: ", time.Since(start))
@@ -336,6 +350,10 @@ func getPrayerTimeByMosqueLocation(month int, year int) {
 	CheckError(e)
 
 	// Now let's unmarshall the data into `payload`
+	content, err := ioutil.ReadFile("data/mosque.json")
+	if err != nil {
+		log.Fatal("Error when opening file: ", err)
+	}
 	var listMosque []Mosque
 	err = json.Unmarshal(content, &listMosque)
 
@@ -378,6 +396,96 @@ func CheckError(err error) {
 
 func checkToListEpoch(mosque Mosque, shalat string, epoch int64, database *sql.DB) {
 	insertDynStmt := `insert into "prayer_time"("time", "name", "country", "shalat", "lat", "lon") values($1, $2, $3, $4, $5, $6)`
-	_, e := database.Exec(insertDynStmt, epoch, mosque.Name, mosque.Country, shalat, mosque.Latitude, mosque.Longitude)
-	CheckError(e)
+	database.Exec(insertDynStmt, epoch, mosque.Name, mosque.Country, shalat, mosque.Latitude, mosque.Longitude)
+}
+
+func getPrayerTimeByMosqueLocationConcurrent(month int, year int) {
+	start := time.Now()
+	content, err := ioutil.ReadFile("data/mosque.json")
+	if err != nil {
+		log.Fatal("Error when opening file: ", err)
+	}
+	var listMosque []Mosque
+	err = json.Unmarshal(content, &listMosque)
+	db, err := openDbConnection()
+	if err != nil {
+		log.Fatal(err.Error())
+	}
+	truncateTable := `truncate table "prayer_time"`
+	db.Exec(truncateTable)
+
+	jobs := make(chan Mosque, 0)
+	wg := new(sync.WaitGroup)
+
+	go dispatchWorkers(month, year, db, jobs, wg)
+	readCsvFilePerLineThenSendToWorker(listMosque, jobs, wg)
+
+	wg.Wait()
+
+	duration := time.Since(start)
+	fmt.Println("done in", int(math.Ceil(duration.Seconds())), "seconds")
+}
+func dispatchWorkers(month int, year int, db *sql.DB, jobs <-chan Mosque, wg *sync.WaitGroup) {
+	for workerIndex := 0; workerIndex <= totalWorker; workerIndex++ {
+		go func(workerIndex int, db *sql.DB, jobs <-chan Mosque, wg *sync.WaitGroup) {
+			counter := 0
+			for job := range jobs {
+				doTheJob(month, year, workerIndex, counter, db, job)
+				wg.Done()
+				counter++
+			}
+		}(workerIndex, db, jobs, wg)
+	}
+}
+
+func readCsvFilePerLineThenSendToWorker(listMosque []Mosque, jobs chan<- Mosque, wg *sync.WaitGroup) {
+	for _, mosque := range listMosque {
+		wg.Add(1)
+		jobs <- mosque
+	}
+	close(jobs)
+}
+
+func doTheJob(month int, year int, workerIndex, counter int, db *sql.DB, mosque Mosque) {
+	for {
+		response, error := getPrayerTimeByLocation(mosque.Latitude, mosque.Longitude, month, year)
+		if error != nil {
+			fmt.Println(error)
+		}
+		conn, err := db.Conn(context.Background())
+		for _, dataPrayer := range response.Data {
+			fajr := dataPrayer.Timings.Fajr
+			dhuhr := dataPrayer.Timings.Dhuhr
+			asr := dataPrayer.Timings.Asr
+			maghrib := dataPrayer.Timings.Maghrib
+			isha := dataPrayer.Timings.Isha
+			fajrDate, _ := time.Parse(time.RFC3339, strings.Replace(fajr, "+00:00 (UTC)", "", 1)+"Z")
+			dhuhrDate, _ := time.Parse(time.RFC3339, strings.Replace(dhuhr, "+00:00 (UTC)", "", 1)+"Z")
+			asrDate, _ := time.Parse(time.RFC3339, strings.Replace(asr, "+00:00 (UTC)", "", 1)+"Z")
+			maghribDate, _ := time.Parse(time.RFC3339, strings.Replace(maghrib, "+00:00 (UTC)", "", 1)+"Z")
+			ishaDate, _ := time.Parse(time.RFC3339, strings.Replace(isha, "+00:00 (UTC)", "", 1)+"Z")
+			fajrEpoch := fajrDate.Unix()
+			dhuhrEpoch := dhuhrDate.Unix()
+			asrEpoch := asrDate.Unix()
+			maghribEpoch := maghribDate.Unix()
+			ishaEpoch := ishaDate.Unix()
+			query := `insert into "prayer_time"("time", "name", "country", "shalat", "lat", "lon") values($1, $2, $3, $4, $5, $6)`
+			_, err = conn.ExecContext(context.Background(), query, fajrEpoch, mosque.Name, mosque.Country, "Fajr", mosque.Latitude, mosque.Longitude)
+			_, err = conn.ExecContext(context.Background(), query, dhuhrEpoch, mosque.Name, mosque.Country, "Dhuhr", mosque.Latitude, mosque.Longitude)
+			_, err = conn.ExecContext(context.Background(), query, asrEpoch, mosque.Name, mosque.Country, "Asr", mosque.Latitude, mosque.Longitude)
+			_, err = conn.ExecContext(context.Background(), query, maghribEpoch, mosque.Name, mosque.Country, "Maghrib", mosque.Latitude, mosque.Longitude)
+			_, err = conn.ExecContext(context.Background(), query, ishaEpoch, mosque.Name, mosque.Country, "Isha", mosque.Latitude, mosque.Longitude)
+		}
+		if err != nil {
+			log.Fatal(err.Error())
+		}
+		err = conn.Close()
+		if err != nil {
+			log.Fatal(err.Error())
+		}
+	}
+
+	if counter%100 == 0 {
+		log.Println("=> worker", workerIndex*5, "inserted", counter, "data")
+	}
 }
