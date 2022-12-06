@@ -20,7 +20,7 @@
           </div>
         `;
 
-        const myGlobe = Globe()
+        let myGlobe = Globe()
             .globeImageUrl('//unpkg.com/three-globe/example/img/earth-night.jpg')
             .backgroundImageUrl('//unpkg.com/three-globe/example/img/night-sky.png')
             .pointLat('lat')
@@ -32,7 +32,7 @@
             .labelLat('lat')
             .labelLng('lon')
             .labelAltitude(d => getAlt(d) + 1e-6)
-            .labelDotRadius(0.12)
+            .labelDotRadius(0.5)
             .labelDotOrientation(() => 'bottom')
             .labelColor(d => catColor(d.sholat))
             .labelText('name')
@@ -40,12 +40,24 @@
             .labelResolution(1)
             .labelLabel(getTooltip)
             (document.getElementById('globeViz'));
-        fetch('/prayer').then(res => res.json()).then(volcanoes => {
-            myGlobe.pointsData(volcanoes)
-                .labelsData(volcanoes);
-        });
-        // Add auto-rotation
-        myGlobe.controls().autoRotate = true;
-        myGlobe.controls().autoRotateSpeed = 0.01;
+        myFunction();
+        const timer = new Date();
+        setTimeout(function() {
+            setInterval(myFunction, 60000);
+            myFunction()
+        }, (60 - timer.getSeconds()) * 1000);
+
+        function myFunction() {
+            const dateWithoutSecond = new Date();
+            dateWithoutSecond.setSeconds(0,0)
+            const date = Math.floor(dateWithoutSecond.getTime() / 1000)
+            fetch('/prayer/'+date).then(res => res.json()).then(data => {
+                myGlobe.pointsData(data)
+                    .labelsData(data);
+            });
+            // Add auto-rotation
+            myGlobe.controls().autoRotate = true;
+            myGlobe.controls().autoRotateSpeed = 0.1;
+        }
 </script>
 </body>
