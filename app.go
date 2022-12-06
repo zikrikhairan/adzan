@@ -33,21 +33,27 @@ func main() {
 	r.GET("/", func(c *gin.Context) {
 		c.HTML(http.StatusOK, "index.html", nil)
 	})
-	r.GET("/prayer", func(c *gin.Context) {
-
-		// Let's first read the `config.json` file
-		content, err := ioutil.ReadFile("data/mosque_0001.json")
+	r.GET("/prayer/:epoch", func(c *gin.Context) {
+		epoch, err := strconv.ParseInt(c.Param("epoch"), 10, 64)
 		if err != nil {
-			log.Fatal("Error when opening file: ", err)
+			log.Fatal(err.Error())
 		}
-
-		// Now let's unmarshall the data into `payload`
-		var response []interface{}
-		err = json.Unmarshal(content, &response)
+		filter := bson.D{{"time", epoch}}
+		database, err := connect()
 		if err != nil {
-			log.Fatal("Error during Unmarshal(): ", err)
+			log.Fatal(err.Error())
 		}
-		c.JSON(http.StatusOK, response)
+		cursor, _ := database.Collection("adzan").Find(context.TODO(), filter)
+		var data []listShalat
+		var results []PrayerTime
+		if err = cursor.All(context.TODO(), &data); err != nil {
+			return
+		}
+		for _, result := range data {
+			cursor.Decode(&result)
+			results = append(results, result.PrayerTime...)
+		}
+		c.JSON(http.StatusOK, results)
 	})
 	r.GET("/getMosqueByPosition", func(c *gin.Context) {
 		const bitSize = 64 // Don't think about it to much. It's just 64 bits.
@@ -295,7 +301,7 @@ type PrayerTime struct {
 }
 
 type listShalat struct {
-	Time       int64        `json:"time"`
+	Time       int64        `bson:"time"`
 	PrayerTime []PrayerTime `bson:"prayerTime"`
 }
 
@@ -421,7 +427,7 @@ func getPrayerTimeByMosqueLocation(month int, year int) {
 				checkToListEpoch(mosque, "Fajr", fajrEpoch, db)
 				checkToListEpoch(mosque, "Dhuhr", dhuhrEpoch, db)
 				checkToListEpoch(mosque, "Asr", asrEpoch, db)
-				checkToListEpoch(mosque, "maghrib", maghribEpoch, db)
+				checkToListEpoch(mosque, "Maghrib", maghribEpoch, db)
 				checkToListEpoch(mosque, "Isha", ishaEpoch, db)
 			}()
 		}
